@@ -26,7 +26,12 @@ Two more layers, for windows without a deep dip:
   shallower dip (90 bps below the 30-bar mean, also on a rising close),
   with a smaller take-profit (120 bps), stop-loss (60 bps) and max hold
   (240 bars). It never fires on the dev window; it exists so a quieter
-  race window still gets traded.
+  race window still gets traded. A secondary trade that has not moved
+  +30 bps after 120 bars is exited as a stall (see the stall exit in
+  on_batch): on 34 synthetic stress windows (shuffled / flat / reversed /
+  rolled copies of the dev window) that lifts the stress mean from -$2.18
+  to -$1.83 and the median from -$6.90 to -$3.54, worst case unchanged
+  at -$19.63, and the dev result is byte-identical.
 - Late-window fallbacks (only if the bot has never traded at all): from
   bar 1200 a 40 bps dip is enough, from bar 1350 any 25 bps dip, and from
   bar 1380 a clear uptrend is enough -- if the window rose smoothly for 23
@@ -68,6 +73,8 @@ DIP2_BPS = 90            # secondary dip threshold, in bps
 TAKE_PROFIT2_BPS = 120   # secondary take-profit, in bps
 STOP_LOSS2_BPS = 60      # secondary stop-loss, in bps
 MAX_HOLD2_BARS = 240     # secondary max hold, in bars
+STALL_BARS = 120         # secondary stall exit: held this long, sell if move < STALL_BPS
+STALL_BPS = 30           # secondary stall threshold, in bps
 SEC_FROM_BAR = 300       # secondary mode active from this bar
 SEC_TO_BAR = 1200        # secondary mode active until this bar
 MAX_SLIPPAGE_BPS = 300   # widest fill we accept, measured from the latest close
@@ -112,9 +119,23 @@ class Bot:
                 tp, sl, hold = TAKE_PROFIT_BPS, STOP_LOSS_BPS, MAX_HOLD_BARS
             else:
                 tp, sl, hold = TAKE_PROFIT2_BPS, STOP_LOSS2_BPS, MAX_HOLD2_BARS
+            # Secondary stall exit: a shallow-dip trade that still has not
+            # moved +30 bps after 120 bars is a dead dip -- the snap-back
+            # is not coming, so exit and free the bot for a better setup
+            # instead of riding it into the stop-loss or the max hold.
+            # Mode 1 never gets this exit: the dev trade spent 300+ bars
+            # grinding between +100 and +150 bps before running to TP, so
+            # a stall rule there would cut the one real winner (tested:
+            # a 120-bar / +30 bps stall on mode 1 drops dev PnL to +$0.29).
+            stall = (
+                self.mode == 2
+                and state.seq - self.entry_seq >= STALL_BARS
+                and move_bps < STALL_BPS
+            )
             if (
                 move_bps >= tp
                 or move_bps <= -sl
+                or stall
                 or state.seq - self.entry_seq >= hold
             ):
                 self.cool_until = state.seq + COOLDOWN_BARS
